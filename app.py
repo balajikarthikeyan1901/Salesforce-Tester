@@ -4,28 +4,44 @@ from simple_salesforce import Salesforce
 import sys
 from io import StringIO
 
-st.title("Salesforce AI Test Automation")
+st.set_page_config(page_title="Salesforce Test Automation", layout="wide")
+st.title("Salesforce AI Test Automation Portal")
 
-# Fetch API key safely from Streamlit Secrets
+# --- 1. SECRETS & CREDENTIALS ---
 if "GEMINI_API_KEY" in st.secrets:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 else:
     GEMINI_API_KEY = st.sidebar.text_input("Gemini API Key", type="password")
 
-# --- 1. Sidebar for Salesforce Credentials ---
-st.sidebar.header("Salesforce Credentials")
+st.sidebar.header("Salesforce Staging Credentials")
 username = st.sidebar.text_input("Salesforce Username")
 password = st.sidebar.text_input("Salesforce Password", type="password")
 security_token = st.sidebar.text_input("Security Token", type="password")
 
 if "generated_code" not in st.session_state:
     st.session_state.generated_code = ""
+if "execution_logs" not in st.session_state:
+    st.session_state.execution_logs = ""
 
-# --- 2. AI Test Generator ---
+# --- 2. TEST CASE GENERATION (WITH TEMPLATES) ---
 st.header("Step 1: Generate Test Case")
+
+# Dropdown for pre-built templates
+template_options = {
+    "Custom Test Case (Type your own below)": "",
+    "Create & Validate Account": "Create an Account named 'Test Corp', check that Industry is set to 'Technology', and verify the record exists.",
+    "Create Lead & Convert": "Create a new Lead with status 'Open', convert it, and assert that an Opportunity was successfully generated.",
+    "Test Validation Rule": "Attempt to create a Contact without a Last Name and verify that Salesforce returns a validation error."
+}
+
+selected_template = st.selectbox("Choose a pre-built test template or write your own:", options=list(template_options.keys()))
+
+# If a template is selected, pre-fill the text area with it
+default_prompt = template_options[selected_template]
 test_prompt = st.text_area(
     "Describe the test case in plain English:", 
-    placeholder="e.g., Create a new Account named 'Staging UI Test' with the industry 'Technology' and print the Account ID."
+    value=default_prompt,
+    height=100
 )
 
 if st.button("Generate Python Test"):
@@ -36,24 +52,28 @@ if st.button("Generate Python Test"):
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel('gemini-2.5-flash')
             
+            # UPGRADE: System prompt now forces strict assert checks and PASS/FAIL logs
             system_prompt = """
-            You are a Salesforce automation expert writing Python code using the `simple-salesforce` library.
+            You are a Salesforce QA automation expert writing Python code using the `simple-salesforce` library.
             CRITICAL RULES:
             1. Assume the connection object `sf` is ALREADY created. Do NOT write login code.
             2. Only output the raw Python code. Do not use markdown formatting (no ```python).
-            3. Use print() statements to log successes, record IDs, or failures.
+            3. Use Python `assert` statements to verify data was created or rules triggered properly.
+            4. If an assert passes, use `print("[PASS] <description>")`.
+            5. If an assert fails, use `print("[FAIL] <description>")`.
+            6. Clean up (delete) any test records created at the very end of the script to keep staging clean.
             """
             
-            with st.spinner("Generating test script..."):
+            with st.spinner("AI is writing the test script..."):
                 response = model.generate_content(system_prompt + "\n\nUser Request: " + test_prompt)
                 clean_code = response.text.replace("```python", "").replace("```", "").strip()
                 st.session_state.generated_code = clean_code
-                st.success("Code Generated Successfully!")
+                st.success("Test Script Generated!")
                 
         except Exception as e:
             st.error(f"Failed to generate code: {e}")
 
-# --- 3. Review and Run ---
+# --- 3. REVIEW, RUN & EXPORT LOGS ---
 st.header("Step 2: Review & Run")
 if st.session_state.generated_code:
     st.code(st.session_state.generated_code, language="python")
@@ -65,19 +85,38 @@ if st.session_state.generated_code:
             try:
                 st.info("Connecting to Staging Environment...")
                 sf = Salesforce(username=username, password=password, security_token=security_token, domain='test')
-                st.success("Connected to Salesforce!")
                 
+                # Redirect terminal output to the web app
                 old_stdout = sys.stdout
                 sys.stdout = my_stdout = StringIO()
                 
                 st.info("Executing test case...")
                 local_variables = {'sf': sf}
+                
+                # Run the AI-generated code
                 exec(st.session_state.generated_code, {}, local_variables)
                 
+                # Restore terminal output
                 sys.stdout = old_stdout
+                st.session_state.execution_logs = my_stdout.getvalue()
+                
                 st.success("Test Execution Complete!")
-                st.text("Automation Logs:")
-                st.code(my_stdout.getvalue())
                 
             except Exception as e:
-                st.error(f"Test Execution Failed: {e}")
+                # Catch failures (like AssertErrors) and display them
+                sys.stdout = old_stdout
+                st.session_state.execution_logs = my_stdout.getvalue() + f"\n[CRITICAL ERROR] {e}"
+                st.error("Test execution encountered an error.")
+
+# --- 4. LOG EXPORT FEATURE ---
+if st.session_state.execution_logs:
+    st.text("Automation Logs:")
+    st.code(st.session_state.execution_logs)
+    
+    # UPGRADE: Streamlit download button for saving test results
+    st.download_button(
+        label="Download Test Logs as .TXT",
+        data=st.session_state.execution_logs,
+        file_name="salesforce_test_execution_log.txt",
+        mime="text/plain"
+    )

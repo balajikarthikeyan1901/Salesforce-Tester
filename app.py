@@ -66,4 +66,55 @@ if st.button("Generate Python Test"):
             
             with st.spinner("AI is writing the test script..."):
                 response = model.generate_content(system_prompt + "\n\nUser Request: " + test_prompt)
-                clean_code = response.text.replace("
+                clean_code = response.text.replace("```python", "").replace("```", "").strip()
+                st.session_state.generated_code = clean_code
+                st.success("Test Script Generated!")
+                
+        except Exception as e:
+            st.error(f"Failed to generate code: {e}")
+
+# --- 3. REVIEW, RUN & EXPORT LOGS ---
+st.header("Step 2: Review & Run")
+if st.session_state.generated_code:
+    st.code(st.session_state.generated_code, language="python")
+    
+    if st.button("Validate & Run Automation"):
+        if not username or not password:
+            st.error("Please enter your Salesforce credentials in the sidebar.")
+        else:
+            try:
+                st.info("Connecting to Staging Environment...")
+                sf = Salesforce(username=username, password=password, security_token=security_token, domain='test')
+                
+                # Redirect terminal output to the web app
+                old_stdout = sys.stdout
+                sys.stdout = my_stdout = StringIO()
+                
+                st.info("Executing test case...")
+                local_variables = {'sf': sf}
+                
+                # Run the AI-generated code
+                exec(st.session_state.generated_code, {}, local_variables)
+                
+                # Restore terminal output
+                sys.stdout = old_stdout
+                st.session_state.execution_logs = my_stdout.getvalue()
+                
+                st.success("Test Execution Complete!")
+                
+            except Exception as e:
+                sys.stdout = old_stdout
+                st.session_state.execution_logs = my_stdout.getvalue() + f"\n[CRITICAL ERROR] {e}"
+                st.error("Test execution encountered an error.")
+
+# --- 4. LOG EXPORT FEATURE ---
+if st.session_state.execution_logs:
+    st.text("Automation Logs:")
+    st.code(st.session_state.execution_logs)
+    
+    st.download_button(
+        label="Download Test Logs as .TXT",
+        data=st.session_state.execution_logs,
+        file_name="salesforce_test_execution_log.txt",
+        mime="text/plain"
+    )

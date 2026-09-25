@@ -4,6 +4,7 @@ from simple_salesforce import Salesforce
 import sys
 from io import StringIO
 
+# --- PAGE SETUP ---
 st.set_page_config(page_title="Salesforce Test Automation", layout="wide")
 st.title("Salesforce AI Test Automation Portal")
 
@@ -18,6 +19,7 @@ username = st.sidebar.text_input("Salesforce Username")
 password = st.sidebar.text_input("Salesforce Password", type="password")
 security_token = st.sidebar.text_input("Security Token", type="password")
 
+# Initialize memory so the app doesn't forget the code when you click a button
 if "generated_code" not in st.session_state:
     st.session_state.generated_code = ""
 if "execution_logs" not in st.session_state:
@@ -26,7 +28,6 @@ if "execution_logs" not in st.session_state:
 # --- 2. TEST CASE GENERATION (WITH TEMPLATES) ---
 st.header("Step 1: Generate Test Case")
 
-# Dropdown for pre-built templates
 template_options = {
     "Custom Test Case (Type your own below)": "",
     "Create & Validate Account": "Create an Account named 'Test Corp', check that Industry is set to 'Technology', and verify the record exists.",
@@ -35,9 +36,8 @@ template_options = {
 }
 
 selected_template = st.selectbox("Choose a pre-built test template or write your own:", options=list(template_options.keys()))
-
-# If a template is selected, pre-fill the text area with it
 default_prompt = template_options[selected_template]
+
 test_prompt = st.text_area(
     "Describe the test case in plain English:", 
     value=default_prompt,
@@ -50,8 +50,9 @@ if st.button("Generate Python Test"):
     else:
         try:
             genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-3.8-flash')            
-            # UPGRADE: System prompt now forces strict assert checks and PASS/FAIL logs
+            # Updated to the latest model required by the API
+            model = genai.GenerativeModel('gemini-3.8-flash')
+            
             system_prompt = """
             You are a Salesforce QA automation expert writing Python code using the `simple-salesforce` library.
             CRITICAL RULES:
@@ -65,57 +66,4 @@ model = genai.GenerativeModel('gemini-3.8-flash')
             
             with st.spinner("AI is writing the test script..."):
                 response = model.generate_content(system_prompt + "\n\nUser Request: " + test_prompt)
-                clean_code = response.text.replace("```python", "").replace("```", "").strip()
-                st.session_state.generated_code = clean_code
-                st.success("Test Script Generated!")
-                
-        except Exception as e:
-            st.error(f"Failed to generate code: {e}")
-
-# --- 3. REVIEW, RUN & EXPORT LOGS ---
-st.header("Step 2: Review & Run")
-if st.session_state.generated_code:
-    st.code(st.session_state.generated_code, language="python")
-    
-    if st.button("Validate & Run Automation"):
-        if not username or not password:
-            st.error("Please enter your Salesforce credentials in the sidebar.")
-        else:
-            try:
-                st.info("Connecting to Staging Environment...")
-                sf = Salesforce(username=username, password=password, security_token=security_token, domain='test')
-                
-                # Redirect terminal output to the web app
-                old_stdout = sys.stdout
-                sys.stdout = my_stdout = StringIO()
-                
-                st.info("Executing test case...")
-                local_variables = {'sf': sf}
-                
-                # Run the AI-generated code
-                exec(st.session_state.generated_code, {}, local_variables)
-                
-                # Restore terminal output
-                sys.stdout = old_stdout
-                st.session_state.execution_logs = my_stdout.getvalue()
-                
-                st.success("Test Execution Complete!")
-                
-            except Exception as e:
-                # Catch failures (like AssertErrors) and display them
-                sys.stdout = old_stdout
-                st.session_state.execution_logs = my_stdout.getvalue() + f"\n[CRITICAL ERROR] {e}"
-                st.error("Test execution encountered an error.")
-
-# --- 4. LOG EXPORT FEATURE ---
-if st.session_state.execution_logs:
-    st.text("Automation Logs:")
-    st.code(st.session_state.execution_logs)
-    
-    # UPGRADE: Streamlit download button for saving test results
-    st.download_button(
-        label="Download Test Logs as .TXT",
-        data=st.session_state.execution_logs,
-        file_name="salesforce_test_execution_log.txt",
-        mime="text/plain"
-    )
+                clean_code = response.text.replace("

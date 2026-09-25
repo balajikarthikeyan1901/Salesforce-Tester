@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from simple_salesforce import Salesforce
 import sys
+import time
 from io import StringIO
 
 # --- PAGE SETUP ---
@@ -19,7 +20,6 @@ username = st.sidebar.text_input("Salesforce Username")
 password = st.sidebar.text_input("Salesforce Password", type="password")
 security_token = st.sidebar.text_input("Security Token", type="password")
 
-# Initialize memory so the app doesn't forget the code when you click a button
 if "generated_code" not in st.session_state:
     st.session_state.generated_code = ""
 if "execution_logs" not in st.session_state:
@@ -50,7 +50,6 @@ if st.button("Generate Python Test"):
     else:
         try:
             genai.configure(api_key=GEMINI_API_KEY)
-            # Updated to the latest model required by the API
             model = genai.GenerativeModel('gemini-3.8-flash')
             
             system_prompt = """
@@ -65,10 +64,25 @@ if st.button("Generate Python Test"):
             """
             
             with st.spinner("AI is writing the test script..."):
-                response = model.generate_content(system_prompt + "\n\nUser Request: " + test_prompt)
-                clean_code = response.text.replace("```python", "").replace("```", "").strip()
-                st.session_state.generated_code = clean_code
-                st.success("Test Script Generated!")
+                # UPGRADE: Auto-retry loop to handle the 429 rate limit
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = model.generate_content(system_prompt + "\n\nUser Request: " + test_prompt)
+                        # We use one line here so it doesn't cause a SyntaxError!
+                        clean_code = response.text.replace("```python", "").replace("```", "").strip()
+                        st.session_state.generated_code = clean_code
+                        st.success("Test Script Generated!")
+                        break # Success! Break out of the retry loop.
+                        
+                    except Exception as e:
+                        if "429" in str(e) and attempt < max_retries - 1:
+                            # If we hit the speed limit, warn the user and pause for 26 seconds
+                            st.warning(f"Free tier speed limit reached. Pausing for 26 seconds to auto-retry (Attempt {attempt+1}/{max_retries})...")
+                            time.sleep(26)
+                        else:
+                            # If it's a different error, or we ran out of retries, throw the error
+                            raise e
                 
         except Exception as e:
             st.error(f"Failed to generate code: {e}")
@@ -86,17 +100,14 @@ if st.session_state.generated_code:
                 st.info("Connecting to Staging Environment...")
                 sf = Salesforce(username=username, password=password, security_token=security_token, domain='test')
                 
-                # Redirect terminal output to the web app
                 old_stdout = sys.stdout
                 sys.stdout = my_stdout = StringIO()
                 
                 st.info("Executing test case...")
                 local_variables = {'sf': sf}
                 
-                # Run the AI-generated code
                 exec(st.session_state.generated_code, {}, local_variables)
                 
-                # Restore terminal output
                 sys.stdout = old_stdout
                 st.session_state.execution_logs = my_stdout.getvalue()
                 
